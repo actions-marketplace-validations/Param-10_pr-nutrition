@@ -59,7 +59,8 @@ const fullResult: AnalysisResult = {
   ],
   warnings: [
     'package.json could not be parsed'
-  ]
+  ],
+  explanations: []
 };
 
 const minimalResult: AnalysisResult = {
@@ -96,7 +97,8 @@ const minimalResult: AnalysisResult = {
   },
   lowReviewValueFiles: [],
   reviewFocus: [],
-  warnings: []
+  warnings: [],
+  explanations: []
 };
 
 describe('Renderers', () => {
@@ -157,6 +159,116 @@ describe('Renderers', () => {
     const md = renderMarkdown(controlResult);
     expect(md).toContain('`\\x1b[31m-danger.png`');
     expect(md).not.toContain('\u001b');
+  });
+
+  it('omits the Explanation section by default and includes it with explain', () => {
+    const withExplanations: AnalysisResult = {
+      ...minimalResult,
+      explanations: [
+        {
+          path: 'src/auth/session.ts',
+          kind: 'risk-area',
+          area: 'authentication',
+          ruleId: 'builtin.path.authentication',
+          source: 'builtin',
+          reason: 'Path matched the built-in authentication and security rule.'
+        },
+        {
+          path: 'src/generated/client.ts',
+          kind: 'generated',
+          ruleId: 'config.paths.generated',
+          source: 'config',
+          reason: 'Path matched the config generated pattern src/generated/**.',
+          pattern: 'src/generated/**'
+        }
+      ]
+    };
+    expect(renderMarkdown(withExplanations)).not.toContain('## Explanation');
+    const explained = renderMarkdown(withExplanations, { explain: true });
+    expect(explained).toContain('## Explanation');
+    expect(explained).toContain('`builtin.path.authentication`');
+    expect(explained).toContain('Source: config');
+    expect(explained).toContain('Pattern: `src/generated/**`');
+    expect(explained).toContain('Risk area: authentication');
+  });
+
+  it('handles explain rendering safely when explanations are missing', () => {
+    const withoutExplanations: AnalysisResult = { ...minimalResult };
+    delete withoutExplanations.explanations;
+    expect(renderMarkdown(withoutExplanations, { explain: true })).not.toContain('## Explanation');
+    expect(JSON.parse(renderJson(withoutExplanations, { explain: true }))).not.toHaveProperty('explanations');
+  });
+
+  it('uses copy wording for copied-file explanations', () => {
+    const withCopy: AnalysisResult = {
+      ...minimalResult,
+      explanations: [
+        {
+          path: 'src/copied.ts',
+          kind: 'copy',
+          ruleId: 'builtin.git.copy',
+          source: 'git',
+          reason: 'File copied from src/source.ts.'
+        }
+      ]
+    };
+    const md = renderMarkdown(withCopy, { explain: true });
+    expect(md).toContain('— Copy');
+    expect(md).toContain('File copied from src/source.ts.');
+    expect(md).not.toContain('— Rename');
+
+    const json = JSON.parse(renderJson(withCopy, { explain: true }));
+    expect(json.explanations[0]).toMatchObject({
+      kind: 'copy',
+      ruleId: 'builtin.git.copy'
+    });
+  });
+
+  it('escapes control characters in explanation paths', () => {
+    const controlResult: AnalysisResult = {
+      ...minimalResult,
+      explanations: [
+        {
+          path: '\u001b[31msrc/evil.ts',
+          kind: 'generated',
+          ruleId: 'builtin.path.generated',
+          source: 'builtin',
+          reason: 'Path matched a built-in generated-file rule.'
+        }
+      ]
+    };
+    const md = renderMarkdown(controlResult, { explain: true });
+    expect(md).toContain('`\\x1b[31msrc/evil.ts`');
+    expect(md).not.toContain('\u001b');
+  });
+
+  it('caps the Markdown explanation list at 30 entries', () => {
+    const explanations: NonNullable<AnalysisResult['explanations']> = Array.from({ length: 42 }, (_, index) => ({
+      path: `src/file-${String(index).padStart(3, '0')}.ts`,
+      kind: 'generated' as const,
+      ruleId: 'builtin.path.generated',
+      source: 'builtin' as const,
+      reason: 'Path matched a built-in generated-file rule.'
+    }));
+    const md = renderMarkdown({ ...minimalResult, explanations }, { explain: true });
+    expect(md).toContain('...and 12 more');
+  });
+
+  it('omits explanations from JSON by default and includes all with explain', () => {
+    const explanations: NonNullable<AnalysisResult['explanations']> = [
+      {
+        path: 'a.ts',
+        kind: 'generated',
+        ruleId: 'builtin.path.generated',
+        source: 'builtin',
+        reason: 'Path matched a built-in generated-file rule.'
+      }
+    ];
+    const withExplanations = { ...minimalResult, explanations };
+    expect(JSON.parse(renderJson(withExplanations))).not.toHaveProperty('explanations');
+    const explained = JSON.parse(renderJson(withExplanations, { explain: true }));
+    expect(explained.explanations).toHaveLength(1);
+    expect(Object.keys(explained).at(-1)).toBe('explanations');
   });
 
   it('JSON top-level key order is stable', () => {
